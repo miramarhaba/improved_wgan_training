@@ -20,6 +20,9 @@ import tflib.mnist
 import tflib.plot
 
 MODE = 'wgan-gp' # dcgan, wgan, or wgan-gp
+DIFFLOSS = 0 # 0 = original, 1 = wgan loss, 2 = gan loss
+LOSSNEG1 = 0 # 0 = original, 1 = remove the -1 in the loss function
+SAMPLEDISTRIB = 0 # 0 = original, 1 = fake only, 2 = real only
 DIM = 64 # Model dimensionality
 BATCH_SIZE = 50 # Batch size
 CRITIC_ITERS = 5 # For WGAN and WGAN-GP, number of critic iters per gen iter
@@ -80,7 +83,7 @@ def Generator(n_samples, noise=None):
     return tf.reshape(output, [-1, OUTPUT_DIM])
 
 def Discriminator(inputs):
-    output = tf.reshape(inputs, [-1, 1, 28, 28])
+    output = tf.reshape(inputs, [-1, 28, 28, 1])
 
     output = lib.ops.conv2d.Conv2D('Discriminator.1',1,DIM,5,output,stride=2)
     output = LeakyReLU(output)
@@ -105,6 +108,19 @@ fake_data = Generator(BATCH_SIZE)
 
 disc_real = Discriminator(real_data)
 disc_fake = Discriminator(fake_data)
+
+'''
+acc = (TP + TN) / N
+= TP/N + TN/N
+TP' = 2*TP/N
+TN' = 2*TN/N
+TP' + TN' = 2(TP+ TN/)/N
+
+(TP' + TN')/2 = (TP + TN)/N
+'''
+accuracy_real = tf.keras.metrics.binary_accuracy(tf.ones_like(disc_real), disc_real)
+accuracy_fake = tf.keras.metrics.binary_accuracy(tf.ones_like(disc_fake), disc_fake)
+disc_accuracy = (accuracy_real + accuracy_fake) / 2
 
 gen_params = lib.params_with_name('Generator')
 disc_params = lib.params_with_name('Discriminator')
@@ -135,17 +151,32 @@ elif MODE == 'wgan-gp':
     gen_cost = -tf.reduce_mean(disc_fake)
     disc_cost = tf.reduce_mean(disc_fake) - tf.reduce_mean(disc_real)
 
+    if DIFFLOSS == 2:
+        gen_cost = -tf.keras.losses.binary_crossentropy(tf.ones_like(disc_fake), disc_fake)
+        disc_cost = tf.keras.losses.binary_crossentropy(tf.ones_like(disc_fake), disc_fake) + tf.keras.losses.binary_crossentropy(tf.zeros_like(disc_real), disc_real)
+
     alpha = tf.random_uniform(
         shape=[BATCH_SIZE,1], 
         minval=0.,
         maxval=1.
     )
-    differences = fake_data - real_data
-    interpolates = real_data + (alpha*differences)
-    gradients = tf.gradients(Discriminator(interpolates), [interpolates])[0]
-    slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients), reduction_indices=[1]))
-    gradient_penalty = tf.reduce_mean((slopes-1.)**2)
-    disc_cost += LAMBDA*gradient_penalty
+
+    if DIFFLOSS == 0:
+        if SAMPLEDISTRIB == 0:
+            differences = fake_data - real_data
+            interpolates = real_data + (alpha*differences)
+            gradients = tf.gradients(Discriminator(interpolates), [interpolates])[0]
+        elif SAMPLEDISTRIB == 1:
+            gradients = tf.gradients(Discriminator(fake_data), [fake_data])[0]
+        elif SAMPLEDISTRIB == 2:
+            gradients = tf.gradients(Discriminator(real_data), [real_data])[0]
+
+        slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients), reduction_indices=[1]))
+        if LOSSNEG1 == 0:
+                gradient_penalty = tf.reduce_mean((slopes-1.)**2)
+        elif LOSSNEG1 == 1:
+                gradient_penalty = tf.reduce_mean((slopes)**2)
+        disc_cost += LAMBDA*gradient_penalty
 
     gen_train_op = tf.train.AdamOptimizer(
         learning_rate=1e-4, 
@@ -223,26 +254,40 @@ with tf.Session() as session:
             disc_iters = CRITIC_ITERS
         for i in xrange(disc_iters):
             _data = gen.next()
-            _disc_cost, _ = session.run(
-                [disc_cost, disc_train_op],
+            _disc_cost, _, _disc_accuracy, _accuracy_fake, _accuracy_real = session.run(
+                [disc_cost, disc_train_op, disc_accuracy, accuracy_fake, accuracy_real],
                 feed_dict={real_data: _data}
             )
+
             if clip_disc_weights is not None:
                 _ = session.run(clip_disc_weights)
 
         lib.plot.plot('train disc cost', _disc_cost)
+        lib.plot.plot('train disc accuracy', _disc_accuracy)
+        lib.plot.plot('train disc fake accuracy', _accuracy_fake)
+        lib.plot.plot('train disc real accuracy', _accuracy_real)
         lib.plot.plot('time', time.time() - start_time)
 
         # Calculate dev loss and generate samples every 100 iters
         if iteration % 100 == 99:
             dev_disc_costs = []
+            dev_disc_accuracies = []
+            dev_accuracies_real = []
+            dev_accuracies_fake = []
             for images,_ in dev_gen():
-                _dev_disc_cost = session.run(
-                    disc_cost, 
+                _dev_disc_cost, _dev_disc_accuracy, _dev_accuracy_fake, _dev_accuracy_real = session.run(
+                    [disc_cost, disc_accuracy, accuracy_fake, accuracy_real],
                     feed_dict={real_data: images}
                 )
                 dev_disc_costs.append(_dev_disc_cost)
+                dev_disc_accuracies.append(_dev_disc_accuracy)
+                dev_accuracies_fake.append(_dev_accuracy_fake)
+                dev_accuracies_real.append(_dev_accuracy_real)
+
             lib.plot.plot('dev disc cost', np.mean(dev_disc_costs))
+            lib.plot.plot('dev disc accuracy', np.mean(dev_disc_accuracies))
+            lib.plot.plot('dev disc real accuracy', np.mean(dev_accuracies_real))
+            lib.plot.plot('dev disc fake accuracy', np.mean(dev_accuracies_fake))
 
             generate_image(iteration, _data)
 
