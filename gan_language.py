@@ -2,7 +2,7 @@ import os, sys
 sys.path.append(os.getcwd())
 
 import time
-
+import datetime
 import numpy as np
 import tensorflow as tf
 
@@ -14,9 +14,11 @@ import tflib.plot
 
 # Download Google Billion Word at http://www.statmt.org/lm-benchmark/ and
 # fill in the path to the extracted files here!
-DATA_DIR = ''
+DATA_DIR = '/home/mira/Documents/improved_wgan_training_language/samples/language/1-billion-word-language-modeling-benchmark-r13output'
 if len(DATA_DIR) == 0:
     raise Exception('Please specify path to data directory in gan_language.py!')
+
+print(datetime.datetime.now())
 
 BATCH_SIZE = 64 # Batch size
 ITERS = 200000 # How many iterations to train for
@@ -27,7 +29,11 @@ CRITIC_ITERS = 10 # How many critic iterations per generator iteration. We
                   # use 10 for the results in the paper, but 5 should work fine
                   # as well.
 LAMBDA = 10 # Gradient penalty lambda hyperparameter.
-MAX_N_EXAMPLES = 10000000 # Max number of data examples to load. If data loading
+#MAX_N_EXAMPLES = 10000000 # Max number of data examples to load. If data loading
+                          # is too slow or takes too much RAM, you can decrease
+                          # this (at the expense of having less training data).
+
+MAX_N_EXAMPLES = 1000000 # Max number of data examples to load. If data loading
                           # is too slow or takes too much RAM, you can decrease
                           # this (at the expense of having less training data).
 
@@ -169,6 +175,7 @@ with tf.Session() as session:
         lib.plot.plot('train disc cost', _disc_cost)
 
         if iteration % 100 == 99:
+            print(datetime.datetime.now())
             samples = []
             for i in xrange(10):
                 samples.extend(generate_samples())
