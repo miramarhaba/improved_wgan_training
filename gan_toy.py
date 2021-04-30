@@ -16,6 +16,9 @@ import tflib.ops.linear
 import tflib.plot
 
 MODE = 'wgan-gp' # wgan or wgan-gp
+DIFFLOSS = 0 # 0 = original, 1 = wgan loss, 2 = gan loss
+LOSSNEG1 = 0 # 0 = original, 1 = remove the -1 in the loss function
+SAMPLEDISTRIB = 0 # 0 = original, 1 = fake only, 2 = real only
 DATASET = '8gaussians' # 8gaussians, 25gaussians, swissroll
 DIM = 512 # Model dimensionality
 FIXED_GENERATOR = False # whether to hold the generator fixed at real data plus
@@ -63,24 +66,52 @@ fake_data = Generator(BATCH_SIZE, real_data)
 disc_real = Discriminator(real_data)
 disc_fake = Discriminator(fake_data)
 
+'''
+acc = (TP + TN) / N
+= TP/N + TN/N
+TP' = 2*TP/N
+TN' = 2*TN/N
+TP' + TN' = 2(TP+ TN/)/N
+
+(TP' + TN')/2 = (TP + TN)/N
+'''
+accuracy_real = tf.keras.metrics.binary_accuracy(tf.ones_like(disc_real), disc_real)
+accuracy_fake = tf.keras.metrics.binary_accuracy(tf.ones_like(disc_fake), disc_fake)
+disc_accuracy = (accuracy_real + accuracy_fake) / 2
+
 # WGAN loss
 disc_cost = tf.reduce_mean(disc_fake) - tf.reduce_mean(disc_real)
 gen_cost = -tf.reduce_mean(disc_fake)
 
+if DIFFLOSS == 2:
+    gen_cost = -tf.keras.losses.binary_crossentropy(tf.ones_like(disc_fake), disc_fake)
+    disc_cost = tf.keras.losses.binary_crossentropy(tf.ones_like(disc_fake), disc_fake) + tf.keras.losses.binary_crossentropy(tf.zeros_like(disc_real), disc_real)
+
 # WGAN gradient penalty
 if MODE == 'wgan-gp':
-    alpha = tf.random_uniform(
-        shape=[BATCH_SIZE,1], 
-        minval=0.,
-        maxval=1.
-    )
-    interpolates = alpha*real_data + ((1-alpha)*fake_data)
-    disc_interpolates = Discriminator(interpolates)
-    gradients = tf.gradients(disc_interpolates, [interpolates])[0]
-    slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients), reduction_indices=[1]))
-    gradient_penalty = tf.reduce_mean((slopes-1)**2)
- 
-    disc_cost += LAMBDA*gradient_penalty
+    if DIFFLOSS == 0:
+        if SAMPLEDISTRIB == 0:
+            alpha = tf.random_uniform(
+                shape=[BATCH_SIZE,1], 
+                minval=0.,
+                maxval=1.
+            )
+            interpolates = alpha*real_data + ((1-alpha)*fake_data)
+            disc_interpolates = Discriminator(interpolates)
+            gradients = tf.gradients(disc_interpolates, [interpolates])[0]
+        elif SAMPLEDISTRIB == 1:
+            gradients = tf.gradients(Discriminator(fake_data), [fake_data])[0]
+        elif SAMPLEDISTRIB == 2:
+            gradients = tf.gradients(Discriminator(real_data), [real_data])[0]
+            
+        slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients), reduction_indices=[1]))
+        
+        if LOSSNEG1 == 0:
+                gradient_penalty = tf.reduce_mean((slopes-1.)**2)
+        elif LOSSNEG1 == 1:
+                gradient_penalty = tf.reduce_mean((slopes)**2)
+    
+        disc_cost += LAMBDA*gradient_penalty
 
 disc_params = lib.params_with_name('Discriminator')
 gen_params = lib.params_with_name('Generator')
@@ -230,20 +261,26 @@ with tf.Session() as session:
     session.run(tf.initialize_all_variables())
     gen = inf_train_gen()
     for iteration in xrange(ITERS):
+    	start_time = time.time()
         # Train generator
         if iteration > 0:
             _ = session.run(gen_train_op)
         # Train critic
         for i in xrange(CRITIC_ITERS):
             _data = gen.next()
-            _disc_cost, _ = session.run(
-                [disc_cost, disc_train_op],
+            _disc_cost, _, _disc_accuracy, _accuracy_fake, _accuracy_real = session.run(
+                [disc_cost, disc_train_op, disc_accuracy, accuracy_fake, accuracy_real],
                 feed_dict={real_data: _data}
             )
             if MODE == 'wgan':
                 _ = session.run([clip_disc_weights])
         # Write logs and save samples
         lib.plot.plot('disc cost', _disc_cost)
+        lib.plot.plot('disc accuracy', _disc_accuracy)
+        lib.plot.plot('disc fake accuracy', _accuracy_fake)
+        lib.plot.plot('disc real accuracy', _accuracy_real)
+        lib.plot.plot('time', time.time() - start_time)
+        
         if iteration % 100 == 99:
             lib.plot.flush()
             generate_image(_data)
